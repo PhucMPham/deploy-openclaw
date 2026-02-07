@@ -754,21 +754,34 @@ phase_software_install() {
         print_status ok "OpenClaw already installed: $(openclaw --version 2>/dev/null)"
     else
         print_status info "Installing OpenClaw via official installer..."
+        print_status info "This may take a minute. The installer may show its own output."
+        printf "\n"
+
+        # Run OpenClaw installer in foreground (it may need interactive input or show progress)
         local oc_install="curl -fsSL https://openclaw.bot/install.sh | bash"
+        local install_ok=false
         if [[ "$CURRENT_USER" == "$target_user" ]]; then
-            bash -c "$oc_install" &>/dev/null &
-            tui_spinner $! "Installing OpenClaw..." || true
+            if timeout 120 bash -c "$oc_install"; then
+                install_ok=true
+            fi
         else
-            run_with_sudo "su - $target_user -c 'export NVM_DIR=\"${nvm_dir}\" && . \"\${NVM_DIR}/nvm.sh\" && $oc_install'" &>/dev/null &
-            tui_spinner $! "Installing OpenClaw..." || true
+            local full_cmd="export NVM_DIR=\"${nvm_dir}\" && . \"\${NVM_DIR}/nvm.sh\" && $oc_install"
+            if timeout 120 su - "$target_user" -c "$full_cmd"; then
+                install_ok=true
+            fi
         fi
+
+        printf "\n"
 
         # Verify
         load_nvm_silent
         if command -v openclaw &>/dev/null; then
             print_status ok "OpenClaw installed: $(openclaw --version 2>/dev/null)"
+        elif $install_ok; then
+            print_status warn "OpenClaw installed but not in PATH. Log in as $target_user to use."
         else
-            print_status warn "OpenClaw installed but not in PATH. May need to log in as $target_user."
+            print_status warn "OpenClaw install may have failed or timed out."
+            print_status info "Try manually: su - $target_user -c '$oc_install'"
         fi
     fi
 
