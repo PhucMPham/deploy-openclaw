@@ -66,13 +66,14 @@ install_gum() {
 }
 
 # Auto-install gum, fall back gracefully if it fails
-install_gum || true
+[[ "${DEPLOY_TESTING:-}" != "1" ]] && { install_gum || true; }
 
 # Detect best available TUI backend
-HAS_GUM=false
-HAS_FZF=false
-command -v gum &>/dev/null && HAS_GUM=true
-command -v fzf &>/dev/null && HAS_FZF=true
+if [[ "${DEPLOY_TESTING:-}" != "1" ]]; then
+    HAS_GUM=false; HAS_FZF=false
+    command -v gum &>/dev/null && HAS_GUM=true
+    command -v fzf &>/dev/null && HAS_FZF=true
+fi
 
 # Single-select menu. Returns selected index (0-based) in TUI_RESULT.
 # Usage: tui_menu "Pick one:" "Option A" "Option B" "Option C"
@@ -1108,4 +1109,4 @@ main() {
     done
 }
 
-main "$@"
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
