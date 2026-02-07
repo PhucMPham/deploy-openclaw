@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy-openclaw.sh — Interactive TUI wizard for deploying OpenClaw on Ubuntu/Debian VPS
-# Usage: curl -fsSL https://raw.githubusercontent.com/<user>/deploy-openclaw/main/scripts/deploy-openclaw.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/PhucMPham/deploy-openclaw/main/scripts/deploy-openclaw.sh | bash
 # Or:    bash deploy-openclaw.sh
 # shellcheck disable=SC2059  # Intentional: color vars in printf format strings
 # shellcheck disable=SC2015  # Intentional: A && B || C where B always succeeds (print_status)

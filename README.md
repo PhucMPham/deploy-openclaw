@@ -5,13 +5,13 @@ Interactive TUI wizard for deploying [OpenClaw](https://openclaw.bot) on Ubuntu/
 ## Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<user>/deploy-openclaw/main/scripts/deploy-openclaw.sh | bash
+curl -fsSL https://raw.githubusercontent.com/PhucMPham/deploy-openclaw/main/scripts/deploy-openclaw.sh | bash
 ```
 
 Or clone and run:
 
 ```bash
-git clone https://github.com/<user>/deploy-openclaw.git
+git clone https://github.com/PhucMPham/deploy-openclaw.git
 bash deploy-openclaw/scripts/deploy-openclaw.sh
 ```
 
