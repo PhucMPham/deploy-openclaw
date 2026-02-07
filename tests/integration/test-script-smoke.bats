@@ -45,6 +45,14 @@ teardown() {
     assert_output --partial "SOURCE_OK"
 }
 
+@test "smoke: pipe mode does not trigger unbound BASH_SOURCE error" {
+    # Simulates `curl ... | bash` where BASH_SOURCE is empty
+    # The source guard must handle empty BASH_SOURCE under set -u
+    run bash -c 'cat "'"$DEPLOY_SCRIPT"'" | bash -s -- --help 2>&1; echo "EXIT_CODE=$?"'
+    # Should not contain "unbound variable" error
+    refute_output --partial "unbound variable"
+}
+
 @test "smoke: state file gets chmod 600 when created" {
     source_deploy_script
     override_run_with_sudo
