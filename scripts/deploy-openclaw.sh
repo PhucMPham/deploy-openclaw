@@ -33,81 +33,47 @@ readonly NC='\033[0m'
 declare -a ROLLBACK_STACK=()
 
 # ============================================================================
-# SECTION B: TUI Components
+# SECTION B: TUI Components (gum → fzf → select/read fallback)
 # ============================================================================
 
-# Read a single keypress, handling escape sequences for arrow keys.
-# Fallback keys: k=up, j=down, q=escape, 1-9=jump to item.
-# Timeout 0.5s for SSH latency on escape sequences.
-read_key() {
-    local key
-    IFS= read -rsn1 key
-    case "$key" in
-        $'\x1b')
-            read -rsn2 -t 0.5 key || true
-            case "$key" in
-                '[A') echo "up" ;;
-                '[B') echo "down" ;;
-                *)    echo "escape" ;;
-            esac
-            ;;
-        '') echo "enter" ;;
-        ' ') echo "space" ;;
-        k|K) echo "up" ;;
-        j|J) echo "down" ;;
-        q|Q) echo "escape" ;;
-        [1-9]) echo "$key" ;;
-        *) echo "$key" ;;
-    esac
-}
+# Detect best available TUI backend
+HAS_GUM=false
+HAS_FZF=false
+command -v gum &>/dev/null && HAS_GUM=true
+command -v fzf &>/dev/null && HAS_FZF=true
 
-# Arrow-key vertical menu. Returns selected index (0-based) in TUI_RESULT.
+# Single-select menu. Returns selected index (0-based) in TUI_RESULT.
 # Usage: tui_menu "Pick one:" "Option A" "Option B" "Option C"
 tui_menu() {
     local prompt="$1"; shift
     local -a options=("$@")
     local count=${#options[@]}
-    local selected=0
-    local i
+    local choice
 
-    # Hide cursor
-    tput civis 2>/dev/null || true
-
-    while true; do
-        # Move cursor up to redraw (except first draw)
-        printf "\r"
-        # Clear and print prompt
-        printf "\033[J"
-        printf "${BOLD}%s${NC} ${DIM}(↑↓/jk=move, ENTER=select, 1-9=jump)${NC}\n" "$prompt"
-        for ((i = 0; i < count; i++)); do
-            if ((i == selected)); then
-                printf "  ${CYAN}> %d. %s${NC}\n" "$((i + 1))" "${options[$i]}"
-            else
-                printf "    %d. ${DIM}%s${NC}\n" "$((i + 1))" "${options[$i]}"
-            fi
+    if $HAS_GUM; then
+        choice=$(gum choose --header "$prompt" "${options[@]}") || true
+    elif $HAS_FZF; then
+        choice=$(printf '%s\n' "${options[@]}" | fzf --height=$((count + 2)) --prompt="$prompt > ") || true
+    else
+        # Bash select fallback — works everywhere
+        echo ""
+        printf "${BOLD}%s${NC}\n" "$prompt"
+        PS3="Enter choice (1-${count}): "
+        select choice in "${options[@]}"; do
+            [[ -n "$choice" ]] && break
+            echo "Invalid selection. Try again."
         done
+    fi
 
-        local key
-        key=$(read_key)
-        case "$key" in
-            up)    ((selected > 0)) && ((selected--)) ;;
-            down)  ((selected < count - 1)) && ((selected++)) ;;
-            enter) break ;;
-            [1-9])
-                local jump=$((key - 1))
-                if ((jump < count)); then
-                    selected=$jump
-                fi
-                ;;
-        esac
-
-        # Move cursor back up to redraw
-        printf "\033[%dA" $((count + 1))
+    # Map choice text back to index
+    TUI_RESULT=0
+    local i
+    for ((i = 0; i < count; i++)); do
+        if [[ "${options[$i]}" == "$choice" ]]; then
+            TUI_RESULT=$i
+            return
+        fi
     done
-
-    # Show cursor
-    tput cnorm 2>/dev/null || true
-    TUI_RESULT=$selected
 }
 
 # Multi-select checkbox menu. Returns space-separated indices in TUI_RESULT.
@@ -115,95 +81,98 @@ tui_menu() {
 tui_checkbox() {
     local prompt="$1"; shift
     local -a labels=()
-    local -a states=()
+    local -a defaults=()
     local i
 
     for item in "$@"; do
         local prefix="${item%%:*}"
         local label="${item#*:}"
         labels+=("$label")
-        if [[ "$prefix" == "on" ]]; then
-            states+=(1)
-        else
-            states+=(0)
-        fi
+        [[ "$prefix" == "on" ]] && defaults+=("$label")
     done
 
     local count=${#labels[@]}
-    local selected=0
+    local -a selected_labels=()
 
-    tput civis 2>/dev/null || true
-
-    while true; do
-        printf "\r\033[J"
-        printf "${BOLD}%s${NC} ${DIM}(↑↓/jk=move, SPACE=toggle, ENTER=confirm, 1-9=jump)${NC}\n" "$prompt"
+    if $HAS_GUM; then
+        local gum_args=(gum choose --no-limit --header "$prompt")
+        for d in "${defaults[@]}"; do
+            gum_args+=(--selected "$d")
+        done
+        gum_args+=("${labels[@]}")
+        # Read gum output line by line
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && selected_labels+=("$line")
+        done < <("${gum_args[@]}" 2>/dev/null || true)
+    elif $HAS_FZF; then
+        # Pre-select defaults by marking them
+        local fzf_input=""
         for ((i = 0; i < count; i++)); do
-            local check=" "
-            ((states[i])) && check="x"
-            if ((i == selected)); then
-                printf "  ${CYAN}> %d. [%s] %s${NC}\n" "$((i + 1))" "$check" "${labels[$i]}"
-            else
-                printf "    %d. [%s] ${DIM}%s${NC}\n" "$((i + 1))" "$check" "${labels[$i]}"
-            fi
+            fzf_input+="${labels[$i]}"$'\n'
+        done
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && selected_labels+=("$line")
+        done < <(printf '%s' "$fzf_input" | fzf --multi --height=$((count + 2)) --prompt="$prompt > " || true)
+    else
+        # Numbered list fallback with toggle
+        echo ""
+        printf "${BOLD}%s${NC}\n" "$prompt"
+        local -a states=()
+        for ((i = 0; i < count; i++)); do
+            states+=(0)
+            for d in "${defaults[@]}"; do
+                [[ "${labels[$i]}" == "$d" ]] && states[i]=1
+            done
         done
 
-        local key
-        key=$(read_key)
-        case "$key" in
-            up)    ((selected > 0)) && ((selected--)) ;;
-            down)  ((selected < count - 1)) && ((selected++)) ;;
-            space) ((states[selected] = !states[selected])) ;;
-            enter) break ;;
-            [1-9])
-                local jump=$((key - 1))
-                if ((jump < count)); then
-                    selected=$jump
-                fi
-                ;;
-        esac
+        while true; do
+            for ((i = 0; i < count; i++)); do
+                local check=" "
+                ((states[i])) && check="x"
+                printf "  %d. [%s] %s\n" "$((i + 1))" "$check" "${labels[$i]}"
+            done
+            printf "  ${DIM}Enter number to toggle, or 0 to confirm:${NC} "
+            local input
+            read -r input
+            if [[ "$input" == "0" ]]; then
+                break
+            elif [[ "$input" =~ ^[0-9]+$ ]] && ((input >= 1 && input <= count)); then
+                local idx=$((input - 1))
+                ((states[idx] = !states[idx]))
+            else
+                echo "Invalid. Enter 1-${count} to toggle, 0 to confirm."
+            fi
+            # Move cursor up to redraw
+            printf "\033[%dA\033[J" $((count + 1))
+        done
 
-        printf "\033[%dA" $((count + 1))
-    done
+        for ((i = 0; i < count; i++)); do
+            ((states[i])) && selected_labels+=("${labels[$i]}")
+        done
+    fi
 
-    tput cnorm 2>/dev/null || true
-
-    # Build result: space-separated indices of selected items
+    # Map selected labels back to indices
     TUI_RESULT=""
     for ((i = 0; i < count; i++)); do
-        ((states[i])) && TUI_RESULT+="$i "
+        for sel in "${selected_labels[@]}"; do
+            if [[ "${labels[$i]}" == "$sel" ]]; then
+                TUI_RESULT+="$i "
+                break
+            fi
+        done
     done
     TUI_RESULT="${TUI_RESULT% }"
 }
 
-# Text input with optional default and secret mode.
-# Usage: tui_input "Enter value:" "default" [true for secret]
-tui_input() {
-    local prompt="$1"
-    local default="${2:-}"
-    local is_secret="${3:-false}"
-
-    local display_default=""
-    [[ -n "$default" ]] && display_default=" ${DIM}[${default}]${NC}"
-
-    printf "${BOLD}%s${NC}%b " "$prompt" "$display_default"
-
-    local value
-    if [[ "$is_secret" == "true" ]]; then
-        read -rs value
-        echo
-    else
-        read -r value
-    fi
-
-    [[ -z "$value" && -n "$default" ]] && value="$default"
-    TUI_RESULT="$value"
-}
-
-# Yes/No confirmation with arrow selection. Returns 0=yes, 1=no.
+# Yes/No confirmation. Returns 0=yes, 1=no.
 tui_confirm() {
     local question="$1"
-    tui_menu "$question" "Yes" "No"
-    return "$TUI_RESULT"
+    if $HAS_GUM; then
+        gum confirm "$question" && return 0 || return 1
+    else
+        tui_menu "$question" "Yes" "No"
+        return "$TUI_RESULT"
+    fi
 }
 
 # Spinner displayed while a background command runs.
@@ -211,6 +180,14 @@ tui_confirm() {
 tui_spinner() {
     local pid="$1"
     local label="$2"
+
+    if $HAS_GUM; then
+        gum spin --spinner dot --title "$label" -- bash -c "while kill -0 $pid 2>/dev/null; do sleep 0.5; done" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        return $?
+    fi
+
+    # Simple fallback spinner
     local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
     local i=0
 
