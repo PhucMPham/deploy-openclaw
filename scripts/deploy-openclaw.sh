@@ -36,6 +36,24 @@ declare -a ROLLBACK_STACK=()
 # SECTION B: TUI Components (gum → fzf → select/read fallback)
 # ============================================================================
 
+# Install gum for best TUI experience (arrow keys, spacebar, etc.)
+install_gum() {
+    if command -v gum &>/dev/null; then return 0; fi
+    # Only attempt on Debian/Ubuntu
+    if [[ ! -f /etc/os-release ]]; then return 1; fi
+    if ! command -v gpg &>/dev/null; then
+        apt-get update -qq && apt-get install -y -qq gpg >/dev/null 2>&1 || return 1
+    fi
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://repo.charm.sh/apt/gpg.key | gpg --dearmor -o /etc/apt/keyrings/charm.gpg 2>/dev/null &&
+    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" > /etc/apt/sources.list.d/charm.list &&
+    apt-get update -qq >/dev/null 2>&1 &&
+    apt-get install -y -qq gum >/dev/null 2>&1
+}
+
+# Auto-install gum silently, fall back gracefully if it fails
+install_gum 2>/dev/null || true
+
 # Detect best available TUI backend
 HAS_GUM=false
 HAS_FZF=false
