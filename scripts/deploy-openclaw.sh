@@ -11,6 +11,7 @@ set -euo pipefail
 # ============================================================================
 
 readonly VERSION="1.0.0"
+readonly SCRIPT_URL="https://raw.githubusercontent.com/PhucMPham/deploy-openclaw/main/scripts/deploy-openclaw.sh"
 readonly OPENCLAW_USER="openclaw"
 readonly OPENCLAW_HOME="/opt/openclaw"
 readonly STATE_FILE="${OPENCLAW_HOME}/.deploy-state"
@@ -427,13 +428,15 @@ run_with_sudo() {
     fi
 }
 
-# Detect pipe mode and re-exec with tty
+# Detect pipe mode and re-exec with tty.
+# When running via `curl | bash`, bash already consumed all stdin so we
+# re-download the script to a temp file and re-exec with /dev/tty as stdin.
 ensure_not_piped() {
     if [[ ! -t 0 ]]; then
         local tmp_script="/tmp/deploy-openclaw-$$.sh"
-        cat > "$tmp_script"
+        printf "Detected pipe mode. Downloading script for interactive use...\n"
+        curl -fsSL "$SCRIPT_URL" -o "$tmp_script"
         chmod +x "$tmp_script"
-        printf "Detected pipe mode. Re-launching with interactive terminal...\n"
         exec bash "$tmp_script" "$@" < /dev/tty
     fi
 }
