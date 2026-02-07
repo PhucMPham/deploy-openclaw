@@ -549,13 +549,16 @@ phase_security_setup() {
         run_with_sudo "apt-get update -qq && apt-get install -y -qq ufw" &>/dev/null &
         tui_spinner $! "Installing UFW..." || true
 
-        run_with_sudo "ufw default deny incoming"
-        run_with_sudo "ufw default allow outgoing"
-        run_with_sudo "ufw allow ssh"
-        run_with_sudo "ufw allow 80/tcp"
-        run_with_sudo "ufw allow 443/tcp"
-        run_with_sudo "ufw --force enable"
-        print_status ok "UFW configured: deny incoming, allow SSH/80/443"
+        if run_with_sudo "ufw default deny incoming" &>/dev/null &&
+           run_with_sudo "ufw default allow outgoing" &>/dev/null &&
+           run_with_sudo "ufw allow ssh" &>/dev/null &&
+           run_with_sudo "ufw allow 80/tcp" &>/dev/null &&
+           run_with_sudo "ufw allow 443/tcp" &>/dev/null &&
+           run_with_sudo "ufw --force enable" &>/dev/null; then
+            print_status ok "UFW configured: deny incoming, allow SSH/80/443"
+        else
+            print_status warn "UFW setup failed (may need real VPS, not Docker container)"
+        fi
     fi
 
     # --- SSH Key Setup ---
@@ -629,8 +632,11 @@ phase_security_setup() {
         printf "\n  ${BOLD}fail2ban${NC}\n"
         run_with_sudo "apt-get update -qq && apt-get install -y -qq fail2ban" &>/dev/null &
         tui_spinner $! "Installing fail2ban..." || true
-        run_with_sudo "systemctl enable fail2ban && systemctl start fail2ban"
-        print_status ok "fail2ban installed and enabled"
+        if run_with_sudo "systemctl enable fail2ban && systemctl start fail2ban" &>/dev/null; then
+            print_status ok "fail2ban installed and enabled"
+        else
+            print_status warn "fail2ban installed but systemd not available (Docker?)"
+        fi
     fi
 
     # --- Tailscale ---
