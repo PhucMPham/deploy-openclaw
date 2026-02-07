@@ -1110,4 +1110,4 @@ main() {
 }
 
 # Run main when executed directly or piped; skip when sourced (for testing)
-[[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
+[[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]:-}" == "${0}" ]] && main "$@"
