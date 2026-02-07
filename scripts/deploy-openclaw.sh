@@ -38,21 +38,31 @@ declare -a ROLLBACK_STACK=()
 
 # Install gum for best TUI experience (arrow keys, spacebar, etc.)
 install_gum() {
-    if command -v gum &>/dev/null; then return 0; fi
-    # Only attempt on Debian/Ubuntu
-    if [[ ! -f /etc/os-release ]]; then return 1; fi
-    if ! command -v gpg &>/dev/null; then
-        apt-get update -qq && apt-get install -y -qq gpg >/dev/null 2>&1 || return 1
+    if command -v gum &>/dev/null; then
+        printf "  ${GREEN}✓${NC} gum already installed\n"
+        return 0
     fi
+    # Only attempt on Debian/Ubuntu with root
+    if [[ ! -f /etc/os-release ]] || [[ "$(id -u)" -ne 0 ]]; then return 1; fi
+
+    printf "  Installing gum (interactive UI toolkit)... "
+    apt-get update -qq >/dev/null 2>&1
+    apt-get install -y -qq gpg curl >/dev/null 2>&1 || return 1
     mkdir -p /etc/apt/keyrings
-    curl -fsSL https://repo.charm.sh/apt/gpg.key | gpg --dearmor -o /etc/apt/keyrings/charm.gpg 2>/dev/null &&
-    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" > /etc/apt/sources.list.d/charm.list &&
-    apt-get update -qq >/dev/null 2>&1 &&
-    apt-get install -y -qq gum >/dev/null 2>&1
+    curl -fsSL https://repo.charm.sh/apt/gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/charm.gpg 2>/dev/null || return 1
+    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" > /etc/apt/sources.list.d/charm.list
+    apt-get update -qq >/dev/null 2>&1
+    if apt-get install -y -qq gum >/dev/null 2>&1; then
+        printf "${GREEN}done${NC}\n"
+        return 0
+    else
+        printf "${RED}failed${NC} (will use number menus)\n"
+        return 1
+    fi
 }
 
-# Auto-install gum silently, fall back gracefully if it fails
-install_gum 2>/dev/null || true
+# Auto-install gum, fall back gracefully if it fails
+install_gum || true
 
 # Detect best available TUI backend
 HAS_GUM=false
