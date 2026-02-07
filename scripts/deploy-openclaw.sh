@@ -5,6 +5,7 @@
 # shellcheck disable=SC2059  # Intentional: color vars in printf format strings
 # shellcheck disable=SC2015  # Intentional: A && B || C where B always succeeds (print_status)
 set -euo pipefail
+umask 077
 
 # ============================================================================
 # SECTION A: Constants & Globals
@@ -31,6 +32,9 @@ readonly NC='\033[0m'
 
 # Rollback stack
 declare -a ROLLBACK_STACK=()
+
+# Background process tracking
+declare -a BG_PIDS=()
 
 # ============================================================================
 # SECTION B: TUI Components (gum → fzf → select/read fallback)
@@ -199,7 +203,9 @@ tui_checkbox() {
 tui_confirm() {
     local question="$1"
     if $HAS_GUM; then
-        gum confirm "$question" && return 0 || return 1
+        local rc=0
+        gum confirm "$question" || rc=$?
+        return $rc
     else
         tui_menu "$question" "Yes" "No"
         return "$TUI_RESULT"
@@ -211,9 +217,10 @@ tui_confirm() {
 tui_spinner() {
     local pid="$1"
     local label="$2"
+    BG_PIDS+=("$pid")
 
     if $HAS_GUM; then
-        gum spin --spinner dot --title "$label" -- bash -c "while kill -0 $pid 2>/dev/null; do sleep 0.5; done" 2>/dev/null
+        gum spin --spinner dot --title "$label" -- bash -c "while kill -0 $pid 2>/dev/null; do sleep 0.5; done" 2>/dev/null || true
         wait "$pid" 2>/dev/null
         return $?
     fi
@@ -273,17 +280,31 @@ state_init() {
     fi
     if [[ ! -f "$STATE_FILE" ]]; then
         run_with_sudo "touch $STATE_FILE"
-        run_with_sudo "chmod 666 $STATE_FILE"
+        run_with_sudo "chmod 600 $STATE_FILE"
     fi
 }
 
 state_load() {
-    # shellcheck disable=SC1090
-    [[ -f "$STATE_FILE" ]] && source "$STATE_FILE" 2>/dev/null || true
+    [[ ! -f "$STATE_FILE" ]] && return 0
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value//[^a-zA-Z0-9_.\/:-]/}"
+        declare -g "$key=$value"
+    done < "$STATE_FILE"
 }
 
 state_save() {
     local key="$1" val="$2"
+    # Validate key format
+    if [[ ! "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+        log "WARN" "state_save: invalid key rejected: $key"
+        return 1
+    fi
+    # Sanitize value
+    val="${val//[^a-zA-Z0-9_.\/:-]/}"
     # Remove existing key, then append
     if [[ -f "$STATE_FILE" ]]; then
         local tmp
@@ -324,6 +345,19 @@ state_show_summary() {
 # ============================================================================
 # SECTION D: System Detection
 # ============================================================================
+
+# Retry wrapper for critical network operations
+retry_curl() {
+    local url="$1"; shift
+    local attempts=3 delay=5 i
+    for ((i=1; i<=attempts; i++)); do
+        if curl -fsSL --max-time 120 --connect-timeout 10 "$url" "$@"; then
+            return 0
+        fi
+        ((i < attempts)) && { print_status warn "Download failed, retry $i/$attempts..."; sleep "$delay"; }
+    done
+    return 1
+}
 
 detect_os() {
     if [[ ! -f /etc/os-release ]]; then
@@ -377,7 +411,7 @@ detect_user() {
 }
 
 check_internet() {
-    if curl -sfSL --max-time 5 https://openclaw.bot > /dev/null 2>&1; then
+    if retry_curl "https://openclaw.bot" -o /dev/null 2>&1; then
         print_status ok "Internet connectivity OK"
     else
         print_status fail "Cannot reach openclaw.bot — check internet"
@@ -442,7 +476,7 @@ check_existing_software() {
 run_with_sudo() {
     local cmd="$*"
     if $IS_ROOT; then
-        eval "$cmd"
+        bash -c "$cmd"
     elif $HAS_SUDO || sudo -n true 2>/dev/null; then
         sudo bash -c "$cmd"
     else
@@ -458,10 +492,21 @@ run_with_sudo() {
 # re-download the script to a temp file and re-exec with /dev/tty as stdin.
 ensure_not_piped() {
     if [[ ! -t 0 ]]; then
-        local tmp_script="/tmp/deploy-openclaw-$$.sh"
+        if [[ ! -c /dev/tty ]]; then
+            printf "ERROR: No TTY available. Run directly: bash <(curl -fsSL %s)\n" "$SCRIPT_URL" >&2
+            exit 1
+        fi
+        local tmp_dir
+        tmp_dir=$(mktemp -d) || { printf "Failed to create temp dir\n" >&2; exit 1; }
+        local tmp_script="${tmp_dir}/deploy-openclaw.sh"
         printf "Detected pipe mode. Downloading script for interactive use...\n"
-        curl -fsSL "$SCRIPT_URL" -o "$tmp_script"
-        chmod +x "$tmp_script"
+        retry_curl "$SCRIPT_URL" -o "$tmp_script"
+        if [[ ! -s "$tmp_script" ]]; then
+            printf "ERROR: Downloaded script is empty\n" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+        chmod 700 "$tmp_script"
         exec bash "$tmp_script" "$@" < /dev/tty
     fi
 }
@@ -571,39 +616,64 @@ phase_security_setup() {
         esac
     done
 
+    # --- Batch apt install for selected packages ---
+    local apt_packages=()
+    $do_ufw && apt_packages+=("ufw")
+    $do_fail2ban && apt_packages+=("fail2ban")
+    if ((${#apt_packages[@]} > 0)); then
+        run_with_sudo "apt-get update -qq && apt-get install -y -qq ${apt_packages[*]}" &>/dev/null &
+        if ! tui_spinner $! "Installing ${apt_packages[*]}..."; then
+            print_status warn "Package installation may have failed — continuing with available packages"
+        fi
+    fi
+
     # --- UFW ---
     if $do_ufw; then
         printf "\n  ${BOLD}UFW Firewall${NC}\n"
-        run_with_sudo "apt-get update -qq && apt-get install -y -qq ufw" &>/dev/null &
-        tui_spinner $! "Installing UFW..." || true
-
-        local ufw_cmds="ufw default deny incoming && ufw default allow outgoing && ufw allow ssh && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable"
-        if run_with_sudo "$ufw_cmds" >/dev/null 2>&1; then
-            print_status ok "UFW configured: deny incoming, allow SSH/80/443"
+        if ! command -v ufw &>/dev/null; then
+            print_status warn "UFW not available — install may have failed"
         else
-            print_status warn "UFW setup failed (may need real VPS, not Docker container)"
+            local ufw_cmds="ufw default deny incoming && ufw default allow outgoing && ufw allow ssh && ufw allow 80/tcp && ufw allow 443/tcp && ufw --force enable"
+            if run_with_sudo "$ufw_cmds" >/dev/null 2>&1; then
+                print_status ok "UFW configured: deny incoming, allow SSH/80/443"
+            else
+                print_status warn "UFW setup failed (may need real VPS, not Docker container)"
+            fi
         fi
     fi
 
     # --- SSH Key Setup ---
     if $do_sshkeys; then
         printf "\n  ${BOLD}SSH Key Setup${NC}\n"
-        print_status info "To set up SSH key access, run this from your LOCAL machine:"
-        printf "\n    ${CYAN}ssh-copy-id root@<server-ip>${NC}\n"
-        printf "    ${DIM}(or: ssh-copy-id %s@<server-ip>)${NC}\n\n" "$OPENCLAW_USER"
-        print_status info "After copying your key, test login in a NEW terminal before continuing."
 
-        printf "\n"
-        tui_menu "Have you set up and tested SSH key login?" \
-            "Yes, SSH key login works" \
-            "Skip for now"
+        # Auto-detect existing SSH keys
+        local keys_found=false
+        [[ -f /root/.ssh/authorized_keys && -s /root/.ssh/authorized_keys ]] && keys_found=true
+        [[ -f "/home/${OPENCLAW_USER}/.ssh/authorized_keys" && -s "/home/${OPENCLAW_USER}/.ssh/authorized_keys" ]] && keys_found=true
 
-        if ((TUI_RESULT == 0)); then
+        if $keys_found; then
+            print_status ok "SSH authorized_keys detected"
             state_save "ssh_keys_verified" "true"
-            print_status ok "SSH key login confirmed"
+            print_status ok "SSH key login auto-confirmed"
         else
-            state_save "ssh_keys_verified" "false"
-            print_status warn "SSH keys not verified — SSH hardening will be blocked"
+            print_status warn "No SSH keys detected in authorized_keys"
+            print_status info "To set up SSH key access, run this from your LOCAL machine:"
+            printf "\n    ${CYAN}ssh-copy-id root@<server-ip>${NC}\n"
+            printf "    ${DIM}(or: ssh-copy-id %s@<server-ip>)${NC}\n\n" "$OPENCLAW_USER"
+            print_status info "After copying your key, test login in a NEW terminal before continuing."
+
+            printf "\n"
+            tui_menu "Have you set up and tested SSH key login?" \
+                "Yes, SSH key login works" \
+                "Skip for now"
+
+            if ((TUI_RESULT == 0)); then
+                state_save "ssh_keys_verified" "true"
+                print_status ok "SSH key login confirmed"
+            else
+                state_save "ssh_keys_verified" "false"
+                print_status warn "SSH keys not verified — SSH hardening will be blocked"
+            fi
         fi
     fi
 
@@ -654,9 +724,9 @@ phase_security_setup() {
     # --- fail2ban ---
     if $do_fail2ban; then
         printf "\n  ${BOLD}fail2ban${NC}\n"
-        run_with_sudo "apt-get update -qq && apt-get install -y -qq fail2ban" &>/dev/null &
-        tui_spinner $! "Installing fail2ban..." || true
-        if run_with_sudo "systemctl enable fail2ban && systemctl start fail2ban" >/dev/null 2>&1; then
+        if ! command -v fail2ban-client &>/dev/null; then
+            print_status warn "fail2ban not available — install may have failed"
+        elif run_with_sudo "systemctl enable fail2ban && systemctl start fail2ban" >/dev/null 2>&1; then
             print_status ok "fail2ban installed and enabled"
         else
             print_status warn "fail2ban installed but systemd not available (Docker?)"
@@ -689,6 +759,8 @@ phase_security_setup() {
 # ---------- Phase 4: Software Installation ----------
 phase_software_install() {
     printf "\n${BOLD}═══ Phase 4: Software Installation ═══${NC}\n\n"
+
+    check_disk_space || return 1
 
     # --- Docker ---
     if command -v docker &>/dev/null; then
@@ -913,7 +985,7 @@ rollback_execute() {
     local i
     for ((i = ${#ROLLBACK_STACK[@]} - 1; i >= 0; i--)); do
         print_status info "Undo: ${ROLLBACK_STACK[$i]}"
-        eval "${ROLLBACK_STACK[$i]}" 2>/dev/null || true
+        bash -c "${ROLLBACK_STACK[$i]}" 2>/dev/null || true
     done
     ROLLBACK_STACK=()
     print_status ok "Rollback complete"
@@ -927,7 +999,7 @@ run_safe() {
 
     [[ -n "$rollback" ]] && rollback_push "$rollback"
 
-    if eval "$cmd" >> "$LOG_FILE" 2>&1; then
+    if bash -c "$cmd" >> "$LOG_FILE" 2>&1; then
         print_status ok "$desc"
     else
         print_status fail "$desc"
@@ -952,6 +1024,10 @@ log() {
 cleanup() {
     tput cnorm 2>/dev/null || true
     printf "${NC}"
+    local pid
+    for pid in "${BG_PIDS[@]:-}"; do
+        kill "$pid" 2>/dev/null || true
+    done
 }
 
 run_full_setup() {
@@ -983,6 +1059,7 @@ run_full_setup() {
 main() {
     ensure_not_piped "$@"
     trap cleanup EXIT
+    trap 'printf "\n"; print_status warn "Interrupted"; exit 130' INT TERM
     trap 'on_error $LINENO "$BASH_COMMAND"' ERR
 
     print_banner
