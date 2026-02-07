@@ -36,14 +36,15 @@ declare -a ROLLBACK_STACK=()
 # SECTION B: TUI Components
 # ============================================================================
 
-# Read a single keypress, handling escape sequences for arrow keys
-# Returns: "up", "down", "enter", "space", or the character itself
+# Read a single keypress, handling escape sequences for arrow keys.
+# Fallback keys: k=up, j=down, q=escape, 1-9=jump to item.
+# Timeout 0.5s for SSH latency on escape sequences.
 read_key() {
     local key
     IFS= read -rsn1 key
     case "$key" in
         $'\x1b')
-            read -rsn2 -t 0.1 key || true
+            read -rsn2 -t 0.5 key || true
             case "$key" in
                 '[A') echo "up" ;;
                 '[B') echo "down" ;;
@@ -52,6 +53,10 @@ read_key() {
             ;;
         '') echo "enter" ;;
         ' ') echo "space" ;;
+        k|K) echo "up" ;;
+        j|J) echo "down" ;;
+        q|Q) echo "escape" ;;
+        [1-9]) echo "$key" ;;
         *) echo "$key" ;;
     esac
 }
@@ -73,12 +78,12 @@ tui_menu() {
         printf "\r"
         # Clear and print prompt
         printf "\033[J"
-        printf "${BOLD}%s${NC}\n" "$prompt"
+        printf "${BOLD}%s${NC} ${DIM}(↑↓/jk=move, ENTER=select, 1-9=jump)${NC}\n" "$prompt"
         for ((i = 0; i < count; i++)); do
             if ((i == selected)); then
-                printf "  ${CYAN}> %s${NC}\n" "${options[$i]}"
+                printf "  ${CYAN}> %d. %s${NC}\n" "$((i + 1))" "${options[$i]}"
             else
-                printf "    ${DIM}%s${NC}\n" "${options[$i]}"
+                printf "    %d. ${DIM}%s${NC}\n" "$((i + 1))" "${options[$i]}"
             fi
         done
 
@@ -88,6 +93,12 @@ tui_menu() {
             up)    ((selected > 0)) && ((selected--)) ;;
             down)  ((selected < count - 1)) && ((selected++)) ;;
             enter) break ;;
+            [1-9])
+                local jump=$((key - 1))
+                if ((jump < count)); then
+                    selected=$jump
+                fi
+                ;;
         esac
 
         # Move cursor back up to redraw
@@ -125,14 +136,14 @@ tui_checkbox() {
 
     while true; do
         printf "\r\033[J"
-        printf "${BOLD}%s${NC} ${DIM}(SPACE=toggle, ENTER=confirm)${NC}\n" "$prompt"
+        printf "${BOLD}%s${NC} ${DIM}(↑↓/jk=move, SPACE=toggle, ENTER=confirm, 1-9=jump)${NC}\n" "$prompt"
         for ((i = 0; i < count; i++)); do
             local check=" "
             ((states[i])) && check="x"
             if ((i == selected)); then
-                printf "  ${CYAN}> [%s] %s${NC}\n" "$check" "${labels[$i]}"
+                printf "  ${CYAN}> %d. [%s] %s${NC}\n" "$((i + 1))" "$check" "${labels[$i]}"
             else
-                printf "    [%s] ${DIM}%s${NC}\n" "$check" "${labels[$i]}"
+                printf "    %d. [%s] ${DIM}%s${NC}\n" "$((i + 1))" "$check" "${labels[$i]}"
             fi
         done
 
@@ -143,6 +154,12 @@ tui_checkbox() {
             down)  ((selected < count - 1)) && ((selected++)) ;;
             space) ((states[selected] = !states[selected])) ;;
             enter) break ;;
+            [1-9])
+                local jump=$((key - 1))
+                if ((jump < count)); then
+                    selected=$jump
+                fi
+                ;;
         esac
 
         printf "\033[%dA" $((count + 1))
