@@ -10,7 +10,7 @@ set -euo pipefail
 # SECTION A: Constants & Globals
 # ============================================================================
 
-readonly VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.0"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/PhucMPham/deploy-openclaw/main/scripts/deploy-openclaw.sh"
 readonly OPENCLAW_USER="openclaw"
 readonly OPENCLAW_HOME="/opt/openclaw"
@@ -117,6 +117,8 @@ tui_checkbox() {
         # Numbered list fallback with toggle
         echo ""
         printf "${BOLD}%s${NC}\n" "$prompt"
+        printf "${DIM}  Type a number (1-%d) to toggle on/off, then press ENTER${NC}\n" "$count"
+        printf "${DIM}  Type 0 and press ENTER when done${NC}\n\n"
         local -a states=()
         for ((i = 0; i < count; i++)); do
             states+=(0)
@@ -127,23 +129,24 @@ tui_checkbox() {
 
         while true; do
             for ((i = 0; i < count; i++)); do
-                local check=" "
-                ((states[i])) && check="x"
-                printf "  %d. [%s] %s\n" "$((i + 1))" "$check" "${labels[$i]}"
+                local mark="  "
+                ((states[i])) && mark="${GREEN}✓ ${NC}"
+                printf "  %b%d. %s\n" "$mark" "$((i + 1))" "${labels[$i]}"
             done
-            printf "  ${DIM}Enter number to toggle, or 0 to confirm:${NC} "
+            echo ""
+            printf "  Toggle [1-%d] or confirm [0]: " "$count"
             local input
             read -r input
-            if [[ "$input" == "0" ]]; then
+            if [[ "$input" == "0" || "$input" == "" ]]; then
                 break
             elif [[ "$input" =~ ^[0-9]+$ ]] && ((input >= 1 && input <= count)); then
                 local idx=$((input - 1))
                 ((states[idx] = !states[idx]))
             else
-                echo "Invalid. Enter 1-${count} to toggle, 0 to confirm."
+                printf "  ${RED}Invalid.${NC} Enter 1-%d to toggle, 0 to confirm.\n" "$count"
             fi
-            # Move cursor up to redraw
-            printf "\033[%dA\033[J" $((count + 1))
+            # Move cursor up to redraw list
+            printf "\033[%dA\033[J" $((count + 2))
         done
 
         for ((i = 0; i < count; i++)); do
@@ -229,7 +232,7 @@ print_banner() {
        |_|          Deploy Wizard
 BANNER
     printf "${NC}\n"
-    printf "  ${DIM}Version %s | %s | %s${NC}\n\n" "$VERSION" "$(uname -s)" "$(date '+%Y-%m-%d %H:%M')"
+    printf "  ${DIM}Version %s | %s | %s${NC}\n\n" "$SCRIPT_VERSION" "$(uname -s)" "$(date '+%Y-%m-%d %H:%M')"
 }
 
 # ============================================================================
