@@ -761,12 +761,12 @@ phase_software_install() {
         local oc_install="curl -fsSL https://openclaw.bot/install.sh | bash"
         local install_ok=false
         if [[ "$CURRENT_USER" == "$target_user" ]]; then
-            if timeout 120 bash -c "$oc_install"; then
+            if bash -c "$oc_install"; then
                 install_ok=true
             fi
         else
             local full_cmd="export NVM_DIR=\"${nvm_dir}\" && . \"\${NVM_DIR}/nvm.sh\" && $oc_install"
-            if timeout 120 su - "$target_user" -c "$full_cmd"; then
+            if su - "$target_user" -c "$full_cmd"; then
                 install_ok=true
             fi
         fi
